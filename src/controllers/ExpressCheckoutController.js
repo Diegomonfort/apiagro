@@ -316,4 +316,74 @@ const sendEmail = async (req, res) => {
 
 
 
-module.exports = {RecibeInfoExpressCheckout, updateTransaction, sendEmail};
+const ConsultaEstadoTransaccion = async (req, res) => {
+  try {
+    const { transaccionId } = req.body;
+
+    if (!transaccionId) {
+      return res.status(400).json({ error: "El ID de la transacción es requerido." });
+    }
+
+    const privateKey = loadPrivateKeyFromPfx();
+    const fingerprint = "579F4609DD4315D890921F47293B0E7CAC6CB290";
+    const expirationTime = moment().add(1, "hour").valueOf();
+
+    // Objeto de referencia corregido (ahora con "Request")
+    const referenceObject = {
+      Client: "AgrojardinTest",
+      Request: {
+        MetaReference: transaccionId.toString(),
+        Type: 0,
+      },
+    };
+
+    // Payload a firmar con la estructura correcta
+    const payloadToSign = {
+      Object: {
+        Fingerprint: fingerprint,
+        Object: referenceObject, // Anidación correcta
+        UTCUnixTimeExpiration: expirationTime,
+      },
+    };
+
+    let jsonString = JSON.stringify(payloadToSign.Object, null, 0).replace(/\s+/g, "");
+
+    // Firma del JSON
+    const sign = createSign("SHA512");
+    sign.update(jsonString);
+    const signature = sign.sign(
+      {
+        key: privateKey,
+        padding: require("crypto").constants.RSA_PKCS1_PADDING,
+      },
+      "base64"
+    );
+
+    // Construcción del JSON final con la firma
+    const finalPayloadJson = JSON.stringify({
+      Object: JSON.parse(jsonString), // Asegura que el objeto está bien estructurado
+      Signature: signature,
+    });
+
+    console.log(finalPayloadJson);
+
+    const response = await axios.post(
+      "https://testing.plexo.com.uy:4043/SecurePaymentGateway.svc/Operation/Status",
+      finalPayloadJson,
+      { headers: { "Content-Type": "application/json" } }
+    );
+
+    console.log("✅ Respuesta de consulta de estado:", JSON.stringify(response.data, null, 2));
+
+    return res.status(200).json(response.data);
+  } catch (error) {
+    console.error("❌ Error al consultar el estado de la transacción:", error.response?.data || error.message);
+    return res.status(500).json({ error: "Error en la consulta del estado de la transacción." });
+  }
+};
+
+
+
+
+
+module.exports = {RecibeInfoExpressCheckout, updateTransaction, sendEmail, ConsultaEstadoTransaccion};
