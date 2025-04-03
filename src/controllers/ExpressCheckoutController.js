@@ -96,7 +96,7 @@ const RecibeInfoExpressCheckout = async (req, res) => {
           LimitIssuers: ["4", "11"],
           MetaReference: datosPersonales.email,
           OptionalCommerceId: 12285,
-          RedirectUri: "https://agrojardin.vercel.app/success",
+          RedirectUri: "https://agrojardin.vercel.app/verify",
           Type: 0,
         },
         PaymentData: {
@@ -382,8 +382,25 @@ const ConsultaEstadoTransaccion = async (req, res) => {
   }
 };
 
+const Callback = async (req, res) => {
+  const event = req.body; // La pasarela de pagos enviará datos aquí
+
+  console.log('Webhook recibido:', event);
+
+ /*  // Verifica el tipo de evento y procesa la respuesta
+  if (event.status === 'approved') {
+      console.log(`Pago aprobado para la orden ${event.order_id}`);
+      // Aquí puedes actualizar tu base de datos para marcar la compra como pagada
+  } else if (event.status === 'rejected') {
+      console.log(`Pago rechazado para la orden ${event.order_id}`);
+  } */
+
+  res.sendStatus(200); // Responde a la pasarela para confirmar que recibiste el evento
+};
 
 
 
 
-module.exports = {RecibeInfoExpressCheckout, updateTransaction, sendEmail, ConsultaEstadoTransaccion};
+
+
+module.exports = {RecibeInfoExpressCheckout, updateTransaction, sendEmail, ConsultaEstadoTransaccion, Callback};
