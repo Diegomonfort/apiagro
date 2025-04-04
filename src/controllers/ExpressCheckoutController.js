@@ -418,9 +418,43 @@ const Callback = async (req, res) => {
 };
 
 
+const verifyPayment = async (req, res) => {
+  const { transaccion_id } = req.query;
+
+  if (!transaccion_id) {
+    return res.status(400).json({ info: false, message: 'Falta transaccion_id' });
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from('transacciones')
+      .select('estado')
+      .eq('id', transaccion_id)
+      .single();
+
+    if (error || !data) {
+      return res.json({ info: false });
+    }
+
+    const estado = data.estado;
+
+    if (estado === 0) {
+      return res.json({ info: true, status: 0 }); // Éxito
+    } else if (estado === 1) {
+      return res.json({ info: true, status: 1 }); // Error
+    } else {
+      return res.json({ info: false }); // Aún en proceso (ej. estado 2)
+    }
+
+  } catch (err) {
+    console.error('Error consultando el estado:', err);
+    return res.status(500).json({ info: false, message: 'Error interno' });
+  }
+};
 
 
 
 
 
-module.exports = {RecibeInfoExpressCheckout, updateTransaction, sendEmail, ConsultaEstadoTransaccion, Callback};
+
+module.exports = {RecibeInfoExpressCheckout, updateTransaction, sendEmail, ConsultaEstadoTransaccion, Callback, verifyPayment};
