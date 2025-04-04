@@ -22,37 +22,59 @@ const RecibeInfoExpressCheckout = async (req, res) => {
   try {
     const { datosPersonales, direccionEnvio, products } = req.body;
 
+    // Validación mejorada de datos
     if (!datosPersonales || !direccionEnvio || !products || !Array.isArray(products)) {
       return res.status(400).json({ error: "Faltan datos requeridos o la estructura de datos es incorrecta." });
     }
 
-    // Consultar los productos en Supabase
+    // Validar estructura de productos
+    if (!products.every(p => p.id && typeof p.quantity === 'number')) {
+      return res.status(400).json({ error: "Estructura de productos inválida. Cada producto debe tener id y quantity." });
+    }
+
+    // Crear mapa de cantidades para rápido acceso
+    const quantityMap = products.reduce((acc, curr) => {
+      acc[curr.id] = curr.quantity;
+      return acc;
+    }, {});
+
+    // Extraer IDs para la consulta
+    const productIds = products.map(p => p.id);
+
+    // Consultar productos en Supabase
     const { data: productos, error } = await supabase
       .from("productos")
       .select("id, Precio, Descripción, Producto")
-      .in("id", products);
+      .in("id", productIds);
 
     if (error) {
       console.error("❌ Error al consultar productos en Supabase:", error);
       return res.status(500).json({ error: "Error al obtener información de los productos." });
     }
 
-    if (!productos.length) {
-      return res.status(400).json({ error: "Los productos seleccionados no existen." });
+    // Verificar coincidencia de productos
+    if (productos.length !== productIds.length) {
+      const missingProducts = productIds.filter(id => !productos.some(p => p.id === id));
+      return res.status(400).json({ 
+        error: "Algunos productos no existen en la base de datos.",
+        missingProducts
+      });
     }
 
-    // Construcción de los items con la información de Supabase
+    // Calcular total con cantidades
+    const totalCompra = productos.reduce((acc, producto) => {
+      return acc + (producto.Precio * quantityMap[producto.id]);
+    }, 0);
+
+    // Construir items para la pasarela de pagos
     const itemsArray = productos.map((producto) => ({
-      Amount: parseFloat(producto.Precio.toFixed(2)),
+      Amount: parseFloat((producto.Precio * quantityMap[producto.id]).toFixed(2)),
       ClientItemReferenceId: `Item-${producto.id}`,
       Name: `${producto.Producto}`,
-      Quantity: 1, // Cantidad fija por ahora
+      Quantity: quantityMap[producto.id],
     }));
 
-    // 1️⃣ Guardar la transacción en la base de datos con estado "pendiente"
-    const totalCompra = productos.reduce((acc, producto) => acc + producto.Precio, 0);
-
-    // Insertar la transacción en la base de datos con los productos y el total
+    // Guardar transacción en base de datos
     const { data: nuevaTransaccion, error: errorTransaccion } = await supabase
       .from("transacciones")
       .insert([
@@ -62,14 +84,14 @@ const RecibeInfoExpressCheckout = async (req, res) => {
           email: datosPersonales.email,
           celular: datosPersonales.telefono,
           nombre_completo: `${direccionEnvio.nombre} ${direccionEnvio.apellido}`,
-          productos: products, // Guardar array de IDs de productos
-          total: totalCompra, // Guardar el total de la compra
+          productos: products.map(p => ({ id: p.id, cantidad: p.quantity })), // Guardar con cantidades
+          total: totalCompra,
           estado: 2,
           direccion: direccionEnvio.direccion
         },
       ])
       .select("id")
-      .single(); 
+      .single();
 
     if (errorTransaccion) {
       console.error("❌ Error al guardar la transacción:", errorTransaccion);
@@ -79,7 +101,10 @@ const RecibeInfoExpressCheckout = async (req, res) => {
     console.log("✅ Transacción registrada con ID:", nuevaTransaccion.id);
 
     const privateKey = loadPrivateKeyFromPfx();
+    const fingerprint = "579F4609DD4315D890921F47293B0E7CAC6CB290";
+    const expirationTime = moment().add(1, "hour").valueOf();
 
+    // Construir objeto para la pasarela
     const innerObject = {
       Client: "AgrojardinTest",
       Request: {
@@ -100,12 +125,12 @@ const RecibeInfoExpressCheckout = async (req, res) => {
           Type: 0,
         },
         PaymentData: {
-          ClientReferenceId: nuevaTransaccion.id.toString(), // Usamos el ID de la transacción
+          ClientReferenceId: nuevaTransaccion.id.toString(),
           CurrencyId: 2,
           FinancialInclusion: {
             BilledAmount: parseFloat(itemsArray.reduce((acc, item) => acc + item.Amount, 0).toFixed(2)),
             InvoiceNumber: -1390098693,
-            TaxedAmount: parseFloat(itemsArray.reduce((acc, item) => acc + item.Amount * 0.9, 0).toFixed(1)), // Asumiendo 10% de impuestos
+            TaxedAmount: parseFloat((itemsArray.reduce((acc, item) => acc + item.Amount, 0) * 0.9).toFixed(2)),
             Type: 1,
           },
           Installments: 1,
@@ -130,9 +155,7 @@ const RecibeInfoExpressCheckout = async (req, res) => {
       },
     };
 
-    const fingerprint = "579F4609DD4315D890921F47293B0E7CAC6CB290";
-    const expirationTime = moment().add(1, "hour").valueOf();
-
+    // Generar firma digital
     const payloadToSign = {
       Fingerprint: fingerprint,
       Object: canonicalize(innerObject),
@@ -141,23 +164,25 @@ const RecibeInfoExpressCheckout = async (req, res) => {
 
     let jsonString = JSON.stringify(payloadToSign, null, 0).replace(/\s+/g, "");
 
+    // Ajustar formato numérico para la firma
     jsonString = jsonString
       .replace(/"BilledAmount":(\d+)(,|})/g, '"BilledAmount":$1.0$2')
       .replace(/"TaxedAmount":(\d+)(,|})/g, '"TaxedAmount":$1.0$2')
       .replace(/"Amount":(\d+)(,|})/g, '"Amount":$1.0$2');
 
-    const sign = createSign("SHA512");
+    const sign = crypto.createSign("SHA512");
     sign.update(jsonString);
     const signature = sign.sign(
       {
         key: privateKey,
-        padding: require("crypto").constants.RSA_PKCS1_PADDING,
+        padding: crypto.constants.RSA_PKCS1_PADDING,
       },
       "base64"
     );
 
     const finalPayloadJson = `{"Object":${jsonString},"Signature":"${signature}"}`;
 
+    // Enviar a pasarela de pagos
     const response = await axios.post(
       "https://testing.plexo.com.uy:4043/SecurePaymentGateway.svc/ExpressCheckout",
       finalPayloadJson,
@@ -168,12 +193,15 @@ const RecibeInfoExpressCheckout = async (req, res) => {
 
     return res.status(200).json({
       ...response.data,
-      transaccionId: nuevaTransaccion.id, // Enviamos el ID para referencia futura
+      transaccionId: nuevaTransaccion.id,
     });
 
   } catch (error) {
     console.error("❌ Error en el proceso de pago:", error.response?.data || error.message);
-    return res.status(500).json({ error: "Error en el procesamiento del pago." });
+    return res.status(500).json({ 
+      error: "Error en el procesamiento del pago.",
+      details: error.message
+    });
   }
 };
 
