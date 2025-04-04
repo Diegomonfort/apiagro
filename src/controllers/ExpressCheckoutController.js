@@ -239,22 +239,53 @@ const sendEmail = async (req, res) => {
       return res.status(404).json({ error: 'Transacción no encontrada' });
     }
 
-    // 2️⃣ Obtener información de los productos
+    // 2️⃣ Procesar IDs de productos (compatible con formato antiguo y nuevo)
+    let idsProductos = [];
+    if (Array.isArray(transaccion.productos)) {
+      idsProductos = transaccion.productos.map(item => {
+        if (typeof item === 'object' && item !== null) {
+          return item.id; // Nuevo formato con objetos
+        }
+        return item; // Formato antiguo con números
+      }).filter(id => !!id); // Filtrar IDs válidos
+    }
+
+    // 3️⃣ Obtener información de los productos
     const { data: productos, error: productosError } = await supabase
-      .from('productos') // Asegúrate que este sea el nombre correcto de tu tabla
-      .select('Producto, Precio')
-      .in('id', transaccion.productos);
+      .from('productos')
+      .select('id, Producto, Precio')
+      .in('id', idsProductos);
 
     if (productosError) {
       console.error('Error al obtener productos:', productosError);
       return res.status(500).json({ error: 'Error al obtener información de productos' });
     }
 
-    // 3️⃣ Configurar API Key de Brevo
+    // 4️⃣ Combinar con cantidades y calcular totales
+    const productosConDetalle = productos.map(producto => {
+      const itemTransaccion = transaccion.productos.find(item => {
+        if (typeof item === 'object') {
+          return item.id === producto.id;
+        }
+        return item === producto.id;
+      });
+
+      const cantidad = typeof itemTransaccion === 'object' 
+        ? itemTransaccion.cantidad 
+        : 1;
+
+      return {
+        ...producto,
+        cantidad,
+        total: producto.Precio * cantidad
+      };
+    });
+
+    // 5️⃣ Configurar API Key de Brevo
     const apiKey = defaultClient.authentications['api-key'];
     apiKey.apiKey = process.env.BREVO_API_KEY;
 
-    // 4️⃣ Construir el contenido HTsdML profesional
+    // 6️⃣ Construir el contenido HTML profesional con cantidades
     const htmlContent = `
       <div style="max-width: 600px; margin: 0 auto; font-family: Arial, sans-serif; color: #333;">
         <div style="text-align: center; padding: 20px; background-color: #f8f9fa;">
@@ -267,7 +298,7 @@ const sendEmail = async (req, res) => {
           <div style="margin-bottom: 25px;">
             <h3 style="color: #2d995b; border-bottom: 2px solid #eee; padding-bottom: 10px;">Detalles de la compra</h3>
             <p><strong>ID de Transacción:</strong> ${transaccion.id}</p>
-            <p><strong>Total:</strong> $${transaccion.total} USD</p>
+            <p><strong>Total:</strong> $${transaccion.total.toFixed(2)} USD</p>
           </div>
 
           <div style="margin-bottom: 25px;">
@@ -276,14 +307,18 @@ const sendEmail = async (req, res) => {
               <thead>
                 <tr style="background-color: #f8f9fa;">
                   <th style="text-align: left; padding: 10px;">Producto</th>
-                  <th style="text-align: right; padding: 10px;">Precio</th>
+                  <th style="text-align: center; padding: 10px;">Cantidad</th>
+                  <th style="text-align: right; padding: 10px;">Precio Unitario</th>
+                  <th style="text-align: right; padding: 10px;">Total</th>
                 </tr>
               </thead>
               <tbody>
-                ${productos.map(p => `
+                ${productosConDetalle.map(p => `
                   <tr>
                     <td style="padding: 10px; border-bottom: 1px solid #eee;">${p.Producto}</td>
-                    <td style="padding: 10px; border-bottom: 1px solid #eee; text-align: right;">$${p.Precio} USD</td>
+                    <td style="padding: 10px; border-bottom: 1px solid #eee; text-align: center;">${p.cantidad}</td>
+                    <td style="padding: 10px; border-bottom: 1px solid #eee; text-align: right;">$${p.Precio.toFixed(2)} USD</td>
+                    <td style="padding: 10px; border-bottom: 1px solid #eee; text-align: right;">$${p.total.toFixed(2)} USD</td>
                   </tr>
                 `).join('')}
               </tbody>
@@ -305,7 +340,7 @@ const sendEmail = async (req, res) => {
       </div>
     `;
 
-    // 5️⃣ Configurar y enviar el email
+    // 7️⃣ Configurar y enviar el email
     const apiInstance = new SibApiV3Sdk.TransactionalEmailsApi();
     const sendSmtpEmail = {
       sender: {
@@ -327,7 +362,6 @@ const sendEmail = async (req, res) => {
     return res.status(500).json({ error: 'Error al enviar el email' });
   }
 };
-
 
 
 
