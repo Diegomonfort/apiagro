@@ -64,7 +64,7 @@ const RecibeInfoExpressCheckout = async (req, res) => {
           nombre_completo: `${direccionEnvio.nombre} ${direccionEnvio.apellido}`,
           productos: products, // Guardar array de IDs de productos
           total: totalCompra, // Guardar el total de la compra
-          estado: "pendiente",
+          estado: 2,
           direccion: direccionEnvio.direccion
         },
       ])
@@ -383,20 +383,40 @@ const ConsultaEstadoTransaccion = async (req, res) => {
 };
 
 const Callback = async (req, res) => {
-  const event = req.body; // La pasarela de pagos enviará datos aquí
+  try {
+    const event = req.body;
+    console.log('Webhook recibido:', JSON.stringify(event, null, 2));
 
-  console.log('Webhook recibido:', event);
+    const transactions = event?.Object?.Object?.Transactions;
+    const clientReferenceId = transactions?.Purchase?.ClientReferenceId;
+    const purchaseStatus = transactions?.Purchase?.Status;
 
- /*  // Verifica el tipo de evento y procesa la respuesta
-  if (event.status === 'approved') {
-      console.log(`Pago aprobado para la orden ${event.order_id}`);
-      // Aquí puedes actualizar tu base de datos para marcar la compra como pagada
-  } else if (event.status === 'rejected') {
-      console.log(`Pago rechazado para la orden ${event.order_id}`);
-  } */
+    if (!transactions || !transactions.Purchase || !clientReferenceId) {
+      console.error("Estructura del webhook incorrecta o falta ClientReferenceId");
+      return res.status(400).json({ success: false, message: "Datos inválidos" });
+    }
 
-  res.sendStatus(200); // Responde a la pasarela para confirmar que recibiste el evento
+    const estado = purchaseStatus === 0 ? 0 : 1;
+
+    // Buscar y actualizar la transacción en Supabase
+    const { data, error } = await supabase
+      .from('transacciones')
+      .update({ estado })
+      .eq('id', clientReferenceId);
+
+    if (error) {
+      console.error("Error actualizando la transacción:", error);
+      return res.status(500).json({ success: false, message: "No se pudo actualizar el estado" });
+    }
+
+    return res.json({ success: true, updated: data });
+
+  } catch (error) {
+    console.error("Error procesando el webhook:", error);
+    return res.status(500).json({ success: false, message: "Error interno del servidor" });
+  }
 };
+
 
 
 
